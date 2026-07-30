@@ -26,15 +26,17 @@ This app fills exactly that gap and nothing else.
 ```
 Author edits entry, moves Workflow → In Review
         │
-Workflow natively CREATES a review Task ("Independent review required")
+Contentful fires App Event: ContentManagement.Workflow.save
+        │
+The Function (as the App Identity) CREATES a review Task it OWNS
+("Independent review required")
         │   ← an unresolved Task BLOCKS publishing (native Contentful behavior)
         │
 Someone resolves the review Task
         │
-Contentful fires an App Event: ContentManagement.Task.save
+Contentful fires App Event: ContentManagement.Task.save
         │
-The subscribed Contentful Function (appevent.handler) runs automatically,
-as the App Identity:
+The same Function runs again, as the App Identity:
   1. Confirm this is an active → resolved transition of the review task
   2. Read the resolver from the event (sys.user)
   3. Build contributor set: entry sys.createdBy + sys.updatedBy + every
@@ -46,8 +48,18 @@ as the App Identity:
 ```
 
 Publishing itself is **not** custom code — it stays native, gated by Contentful's
-"unresolved task blocks publish" behavior. The only custom logic is the
-resolver-vs-contributor check.
+"unresolved task blocks publish" behavior. The only custom logic is creating the
+review task and the resolver-vs-contributor check.
+
+### Why the APP creates the task (not the Workflow)
+
+Contentful only lets a task's **creator** (or an admin) re-open/edit it. A task
+created by the Workflow engine is owned by a *different* identity, so the app gets a
+`403 Forbidden` ("you don't have the permissions to make these updates on the task")
+when it tries to re-open it. Therefore the **app** must create the review task — on
+the `Workflow.save` event when the entry reaches the review step — so it owns the
+task and can re-open it on a self-review. Creation is idempotent (it won't add a
+second active review task if one already exists).
 
 ### Why a Task, not a workflow step revert
 
@@ -119,11 +131,12 @@ self-hosted endpoint.
 - A Contentful space on a **Premium/Enterprise** plan (Workflows + Tasks required)
 - Contentful CLI + `@contentful/app-scripts`
 
-### 1. Configure the Workflow to create the review task
+### 1. Configure the Workflow
 
-In the space, create/adjust the Workflow definition so that reaching the review step
-**creates a Task** (e.g. body "Independent review required"). An unresolved task blocks
-publishing natively — that is the hard gate.
+In the space, create a Workflow with a review step (e.g. "In Review"). Note that
+step's **stepId** — you'll pass it as `reviewStepId`. Do **not** have the workflow
+create the review task itself; the app creates it (so the app owns it and can re-open
+it). An unresolved task blocks publishing natively — that is the hard gate.
 
 ### 2. Build and upload the app (incl. the Function)
 
@@ -136,16 +149,22 @@ npm run upload -- --organization-id YOUR_ORG_ID
 ### 3. Subscribe the App Event
 
 In the app's **Events** tab (or via the CMA `AppEventSubscription`), subscribe the
-Function to topic **`ContentManagement.Task.save`**. No payload mapping or URL is
-needed — the Function receives the task entity directly.
+Function to **both** topics: **`ContentManagement.Workflow.save`** (to create the review
+task) and **`ContentManagement.Task.save`** (to enforce on resolve). No payload mapping
+or URL is needed.
 
-Optionally set the **`reviewTaskMarker`** app installation parameter to a substring the
-review task's body contains (e.g. `Independent review`). When set, the app only enforces
-four-eyes on tasks whose body includes that marker; other tasks are ignored. When unset,
-four-eyes is enforced on **every** task resolution (fails toward enforcing).
+Set installation parameters:
+- **`reviewStepId`** (required): the workflow stepId at which the app creates the review
+  task (from step 1).
+- **`reviewTaskMarker`** (optional): substring the review task's body contains; the app
+  only enforces four-eyes on tasks whose body includes it. Defaults to
+  `Independent review required` (the body the app itself writes).
+- **`reviewAssigneeId`** (optional): user id to assign the created task to (a
+  notification hint only — anyone may resolve; the four-eyes check catches the resolver).
+  Falls back to whoever moved the entry to the review step.
 
-> The App Identity needs no special grant here: creating/updating Tasks is within the
-> app identity's allowed entity types.
+> The App Identity needs no special grant here: creating/updating its OWN Tasks is
+> within the app identity's allowed entity types.
 
 ### 4. Test
 
