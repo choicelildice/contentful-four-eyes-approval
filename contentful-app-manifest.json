@@ -4,10 +4,12 @@
       "id": "fourEyesApproval",
       "name": "Four-Eyes Approval Enforcement",
       "description": "On workflow step change to Approved, reverts if the approver contributed to the entry.",
-      "path": "functions/approvalHandler.js",
+      "path": "src/functions/approvalHandler.js",
       "entryFile": "src/functions/approvalHandler.ts",
       "allowNetworks": [],
-      "accepts": ["appevent.handler"]
+      "accepts": [
+        "appevent.handler"
+      ]
     }
   ]
 }
