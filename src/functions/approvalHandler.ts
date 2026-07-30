@@ -12,29 +12,34 @@
  * Two App Events drive it:
  *
  *   A. `ContentManagement.Workflow.save` — when an entry reaches the review step
- *      (`reviewStepId`), THIS APP creates the "Independent review required" task.
- *      The app must be the task's creator: Contentful only lets a task's creator
- *      (or an admin) re-open/edit it, so a workflow-created task cannot be re-opened
- *      by the app. An unresolved task blocks publishing.
+ *      (`reviewStepId`), THIS APP creates the "Independent review required" task, so
+ *      the only review task in play is one the app recognizes (its body carries the
+ *      marker the Task.save path matches on). An unresolved task blocks publishing.
  *
  *   B. `ContentManagement.Task.save` — when the review task is resolved, the app
  *      checks the resolver (event `sys.user`) against the entry's contributor set:
  *        - resolver is NOT a contributor -> leave resolved -> publish unblocked.
- *        - resolver IS a contributor (self-review) -> RE-OPEN the task (status
- *          back to `active`), reassign it to the resolver (native "assigned to you"
- *          notification), and rewrite the body to explain. Publishing stays blocked.
- *          The app owns the task (it created it in A), so this update is permitted.
+ *        - resolver IS a contributor (self-review) -> CREATE A FRESH unresolved
+ *          review task (again blocking publish), assigned to the resolver as a
+ *          native "assigned to you" notification, with a body explaining why.
+ *
+ * Why a NEW task instead of re-opening the resolved one: an App Identity CANNOT
+ * change a task's status back to `active`. Even on a task the app itself created,
+ * `task.update` (resolved -> active) returns 403 "You don't have the permissions to
+ * make these updates on the task" (proven empirically). `task.create` is permitted,
+ * so the app re-imposes the gate by creating a fresh blocking task rather than
+ * reviving the resolved one.
  *
  * Why Tasks and not the Workflow step: an App Identity is NOT permitted to operate
  * on Workflow/WorkflowDefinition entities (a `PUT /workflows/{id}` returns 403,
  * actor `app-function`). `Task` IS in the app identity's allowed entity types, so
- * the app can create and update its OWN tasks — no service-account token needed.
+ * the app can create its OWN tasks — no service-account token needed.
  *
  * Known limitation (for compliance sign-off): App Events are asynchronous (seconds
  * of latency). The task-blocks-publish gate is synchronous and hard, but the
  * four-eyes check on *resolution* is eventual — there is a brief window in which a
- * contributor could self-resolve and publish before this handler re-opens the task.
- * Documented in the README; the synchronous gate is the task itself.
+ * contributor could self-resolve and publish before this handler creates the new
+ * blocking task. Documented in the README; the synchronous gate is the task itself.
  */
 import { collectContributors, evaluateFourEyes, type Snapshot } from './fourEyes.js';
 
@@ -97,7 +102,7 @@ interface FunctionEventContext {
 }
 
 export interface HandlerResult {
-  action: 'none' | 'created' | 'reopened';
+  action: 'none' | 'created' | 'reblocked';
   reason: string;
 }
 
@@ -155,7 +160,8 @@ export async function handleWorkflowEvent(
 }
 
 /**
- * B. Review task resolved -> enforce four-eyes; re-open on self-review.
+ * B. Review task resolved -> enforce four-eyes; create a fresh blocking task on
+ * self-review (the app cannot re-open the resolved one — 403).
  */
 export async function handleTaskEvent(
   body: TaskEventBody,
@@ -195,24 +201,28 @@ export async function handleTaskEvent(
     return { action: 'none', reason: verdict.reason };
   }
 
-  // Violation -> re-open the task (app owns it, so this is permitted), reassign to
-  // the resolver (native notification), and explain why. Re-fetch for the version.
-  const current: TaskLike = await cma.task.get({ ...scope, entryId, taskId: newTask.sys.id });
+  // Violation -> the app CANNOT re-open the resolved task (task.update
+  // resolved->active is 403 even on the app's own task). Instead create a FRESH
+  // unresolved review task, which re-imposes the publish block, assigned to the
+  // resolver as a native "assigned to you" notification, with a body explaining why.
   const explanation =
-    `${markerOf(context)}. This task was re-opened automatically because it was ` +
-    `resolved by a contributor to this entry, which the four-eyes policy does not permit. ` +
-    `A team member who did NOT edit this entry must review and resolve it before publishing.`;
+    `${markerOf(context)}. A new review task was created automatically because the ` +
+    `previous one was resolved by a contributor to this entry, which the four-eyes ` +
+    `policy does not permit. A team member who did NOT edit this entry must review and ` +
+    `resolve this task before the entry can be published.`;
 
-  const reassignTo = resolverId
+  // Assign to the self-resolver if known, else fall back to whoever the resolved
+  // task was assigned to (from the event payload).
+  const assignTo = resolverId
     ? { sys: { type: 'Link' as const, linkType: 'User' as const, id: resolverId } }
-    : current.assignedTo;
+    : newTask.assignedTo;
 
-  await cma.task.update(
-    { ...scope, entryId, taskId: newTask.sys.id },
-    { body: explanation, status: 'active', assignedTo: reassignTo, sys: { version: current.sys.version } }
+  await cma.task.create(
+    { ...scope, entryId },
+    { body: explanation, status: 'active', assignedTo: assignTo }
   );
 
-  return { action: 'reopened', reason: verdict.reason };
+  return { action: 'reblocked', reason: verdict.reason };
 }
 
 /**

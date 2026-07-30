@@ -3,7 +3,7 @@
     {
       "id": "fourEyesApproval",
       "name": "Four-Eyes Approval Enforcement",
-      "description": "On workflow step change to Approved, reverts if the approver contributed to the entry.",
+      "description": "Creates a blocking review task at the review step and re-creates it if a contributor resolves their own entry's task (four-eyes).",
       "path": "src/functions/approvalHandler.js",
       "entryFile": "src/functions/approvalHandler.ts",
       "allowNetworks": [],

@@ -41,9 +41,9 @@ The same Function runs again, as the App Identity:
   2. Read the resolver from the event (sys.user)
   3. Build contributor set: entry sys.createdBy + sys.updatedBy + every
      published snapshot's createdBy
-  4. If resolver ∈ contributors (or resolver unknown) → RE-OPEN the task
-     (status → active), reassign it to the resolver (native "assigned to you"
-     notification), and rewrite the body to explain why. Publish stays blocked.
+  4. If resolver ∈ contributors (or resolver unknown) → CREATE A FRESH unresolved
+     review task (re-imposing the publish block), assigned to the resolver as a
+     native "assigned to you" notification, with a body explaining why.
      Else → leave resolved → publishing is unblocked.
 ```
 
@@ -51,15 +51,32 @@ Publishing itself is **not** custom code — it stays native, gated by Contentfu
 "unresolved task blocks publish" behavior. The only custom logic is creating the
 review task and the resolver-vs-contributor check.
 
-### Why the APP creates the task (not the Workflow)
+### Why a NEW task on self-review (not re-opening the resolved one)
 
-Contentful only lets a task's **creator** (or an admin) re-open/edit it. A task
-created by the Workflow engine is owned by a *different* identity, so the app gets a
-`403 Forbidden` ("you don't have the permissions to make these updates on the task")
-when it tries to re-open it. Therefore the **app** must create the review task — on
-the `Workflow.save` event when the entry reaches the review step — so it owns the
-task and can re-open it on a self-review. Creation is idempotent (it won't add a
-second active review task if one already exists).
+An App Identity **cannot change a task's status back to `active`.** Even on a task
+the app itself created, `task.update` (resolved → active) returns
+`403 Forbidden` ("you don't have the permissions to make these updates on the task") —
+proven empirically in a live space. Only `task.create` is permitted. So on a
+self-review the app **creates a fresh, unresolved review task**, which re-imposes the
+native publish block just as well; the old (resolved) task is simply left in place.
+
+### The App Identity's real permissions on Tasks (measured, not documented)
+
+This spike's core finding — the App Identity's actual capabilities against Task and
+Workflow entities, established by live testing:
+
+| Operation | Result |
+| --- | --- |
+| `task.create` (its own task) | ✅ works |
+| `task.get` by id | ✅ works |
+| `entry.get`, `snapshot.getManyForEntry` | ✅ works |
+| `task.getMany` / list tasks | ❌ 403 "You are not allowed to query task" |
+| `task.update` re-open (resolved → active), even on its own task | ❌ 403 "You don't have the permissions to make these updates on the task" |
+| `PUT /workflows/{id}` (move a workflow step) | ❌ 403 (actor `app-function`) |
+
+The create-new-blocker design is built entirely on the ✅ rows: create the task on
+`Workflow.save`, read the entry/snapshots to build the contributor set, and create a
+fresh blocking task on a self-review. It never relies on any ❌ operation.
 
 ### Why a Task, not a workflow step revert
 
@@ -77,8 +94,8 @@ external server.
 - **Author = any known contributor**, not just the creator — so Author A creating and
   Author B rewriting means neither A nor B can clear the review.
 - **Enforcement = a blocking review task only a non-contributor can clear.** On a
-  self-review, the app re-opens the task (publish stays blocked) and notifies the
-  resolver in-product by reassigning it to them with an explanatory body.
+  self-review, the app creates a fresh blocking task (publish stays blocked) and
+  notifies the resolver in-product by assigning it to them with an explanatory body.
 - **Compute hosted on Contentful** as an App Event handler Function — no webhook, no
   relay, and no server for Forge to run.
 
@@ -99,16 +116,19 @@ strong in practice but is **not** a guaranteed-complete contributor history. If 
 requires bulletproof "every editor who ever touched it," that needs a custom edit log
 (out of scope for this build).
 
-**2. The re-open is eventually consistent.** App Events are asynchronous (seconds of
+**2. The re-block is eventually consistent.** App Events are asynchronous (seconds of
 latency). The hard, synchronous gate is the task itself: while it is unresolved,
 Contentful blocks publishing. The four-eyes check on *resolution* is eventual, so there
 is a brief window in which a contributor could self-resolve **and** publish in the ~1–3s
-before the app re-opens the task. If that window is unacceptable, the resolution check
-must move to a synchronous mechanism (e.g. an `appevent.filter` / entry-publish guard),
-which is a larger change.
+before the app creates the new blocking task. Practically this makes the four-eyes rule
+a **strong deterrent / detective control** (a bypass is attributable and immediately
+re-blocks the entry), **not** a synchronous hard gate on that one action. If a
+zero-window synchronous gate is required, the resolution check must move to a
+synchronous mechanism (e.g. an `appevent.filter` / entry-publish guard), which is a
+larger change and a separate spike.
 
-**3. Fails closed.** If the resolver's identity can't be determined, the task is
-re-opened (never left resolved on an unattributable action).
+**3. Fails closed.** If the resolver's identity can't be determined, a fresh blocking
+task is created anyway (never left unblocked on an unattributable action).
 
 ### Trigger: App Event, not a webhook or relay
 
@@ -135,8 +155,9 @@ self-hosted endpoint.
 
 In the space, create a Workflow with a review step (e.g. "In Review"). Note that
 step's **stepId** — you'll pass it as `reviewStepId`. Do **not** have the workflow
-create the review task itself; the app creates it (so the app owns it and can re-open
-it). An unresolved task blocks publishing natively — that is the hard gate.
+create the review task itself; the app creates it, so the review task the app enforces
+on is the only one and its body carries the marker the app matches. An unresolved task
+blocks publishing natively — that is the hard gate.
 
 ### 2. Build and upload the app (incl. the Function)
 
@@ -173,9 +194,10 @@ npm test        # pure four-eyes logic + handler behavior
 npm run typecheck
 ```
 
-Then, in the space: have an author resolve their own entry's review task and confirm it
-is re-opened (and reassigned back to them with an explanation); have a different user
-resolve it and confirm it stays resolved and the entry becomes publishable.
+Then, in the space: have an author resolve their own entry's review task and confirm a
+fresh blocking task appears (assigned back to them with an explanation), keeping the
+entry unpublishable; have a different (non-contributing) user resolve it and confirm it
+stays resolved and the entry becomes publishable.
 
 ## Project layout
 
@@ -183,7 +205,7 @@ resolve it and confirm it stays resolved and the entry becomes publishable.
 src/functions/
   fourEyes.ts         # pure, testable logic: contributor set + four-eyes verdict
   fourEyes.test.ts    # unit tests for the rule and edge cases
-  approvalHandler.ts  # appevent.handler: wires the rule to the CMA + task re-open
-  approvalHandler.test.ts  # tests for the handler (reopen / allow / no-op / marker / fail-closed)
+  approvalHandler.ts  # appevent.handler: wires the rule to the CMA + create-new-blocker
+  approvalHandler.test.ts  # tests for the handler (reblock / allow / no-op / marker / fail-closed)
 contentful-app-manifest.json  # Function declaration (appevent.handler)
 ```

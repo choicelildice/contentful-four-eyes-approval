@@ -92,27 +92,26 @@ describe('handleWorkflowEvent (app creates & owns the review task)', () => {
 });
 
 describe('handleTaskEvent (four-eyes enforcement on resolve)', () => {
-  it('re-opens the task when a contributor resolves it (self-review)', async () => {
-    const update = vi.fn().mockResolvedValue({});
-    const cma = makeCma({ entryCreatedBy: 'alice', updateSpy: update });
+  it('creates a fresh blocking task when a contributor resolves it (self-review)', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({ entryCreatedBy: 'alice', createSpy: create });
     const result = await handleTaskEvent(resolveBody('alice') as any, ctx(cma) as any);
-    expect(result.action).toBe('reopened');
-    expect(update).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(result.action).toBe('reblocked');
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ entryId: 'entry1' }),
       expect.objectContaining({
         status: 'active',
         assignedTo: expect.objectContaining({ sys: expect.objectContaining({ id: 'alice' }) }),
-        sys: { version: 3 },
       })
     );
   });
 
   it('allows resolution by a non-contributor', async () => {
-    const update = vi.fn().mockResolvedValue({});
-    const cma = makeCma({ entryCreatedBy: 'alice', updateSpy: update });
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({ entryCreatedBy: 'alice', createSpy: create });
     const result = await handleTaskEvent(resolveBody('bob') as any, ctx(cma) as any);
     expect(result.action).toBe('none');
-    expect(update).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
   });
 
   it('ignores events that are not an active->resolved transition', async () => {
@@ -131,13 +130,13 @@ describe('handleTaskEvent (four-eyes enforcement on resolve)', () => {
     expect(cma.entry.get).not.toHaveBeenCalled();
   });
 
-  it('fails closed and re-opens when the resolver identity is unknown', async () => {
-    const update = vi.fn().mockResolvedValue({});
-    const cma = makeCma({ entryCreatedBy: 'alice', updateSpy: update });
+  it('fails closed and re-blocks when the resolver identity is unknown', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({ entryCreatedBy: 'alice', createSpy: create });
     const result = await handleTaskEvent(resolveBody(null) as any, ctx(cma) as any);
-    expect(result.action).toBe('reopened');
-    expect(update).toHaveBeenCalledWith(
-      expect.anything(),
+    expect(result.action).toBe('reblocked');
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ entryId: 'entry1' }),
       expect.objectContaining({ status: 'active' })
     );
   });
