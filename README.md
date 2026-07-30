@@ -6,9 +6,10 @@ that entry. All authors can stay on one team with identical permissions — the 
 supplies the per-entry "not the author" check that Roles and Workflows cannot express on
 their own.
 
-> Built for the Forge Global engagement. Sample/reference implementation — validate
-> against a live space and have Compliance sign off on the limitations below before
-> relying on it for SOC controls.
+> **Disclaimer:** This is sample code, not an official Contentful product or feature.
+> It is provided as-is, without warranty, and is not covered by Contentful support or
+> any SLA. Validate against a live space and have Compliance sign off on the
+> limitations below before relying on it for SOC controls.
 
 ## Why this app is needed
 
@@ -89,7 +90,7 @@ cannot be assigned a space Role). `Task` **is** in the app identity's allowed en
 types, so the app can create and update tasks as itself — no service-account token, no
 external server.
 
-### Design decisions (agreed with Forge)
+### Design decisions
 
 - **Author = any known contributor**, not just the creator — so Author A creating and
   Author B rewriting means neither A nor B can clear the review.
@@ -97,7 +98,7 @@ external server.
   self-review, the app creates a fresh blocking task (publish stays blocked) and
   notifies the resolver in-product by assigning it to them with an explanatory body.
 - **Compute hosted on Contentful** as an App Event handler Function — no webhook, no
-  relay, and no server for Forge to run.
+  relay, and no server to run.
 
 ## Compliance limitations (read before sign-off)
 
@@ -112,8 +113,8 @@ complete edit history. The contributor set this app can build is:
 
 Consequence: an entry edited by several people but never published, or with
 intermediate edits between publishes, may not have every editor represented. This is
-strong in practice but is **not** a guaranteed-complete contributor history. If Forge
-requires bulletproof "every editor who ever touched it," that needs a custom edit log
+strong in practice but is **not** a guaranteed-complete contributor history. If you
+require bulletproof "every editor who ever touched it," that needs a custom edit log
 (out of scope for this build).
 
 **2. The re-block is eventually consistent.** App Events are asynchronous (seconds of

@@ -3,8 +3,8 @@
  * tested without a live space. The handler in `approvalHandler.ts` wires these
  * pure functions to the CMA.
  *
- * "Author" here follows the SOC-grade definition agreed with Forge: the approver
- * must differ from ANY known contributor to the entry, not just the creator.
+ * "Author" here follows a SOC-grade definition: the approver must differ from ANY
+ * known contributor to the entry, not just the creator.
  *
  * Known limitation (documented for compliance sign-off): Contentful does not
  * expose a complete edit history. The contributor set we can build is:
