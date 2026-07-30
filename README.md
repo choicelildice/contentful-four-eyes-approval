@@ -2,7 +2,7 @@
 
 A Contentful App Framework app that enforces a **four-eyes rule** on content review:
 the person who **resolves the review task** on an entry must **not** be a contributor to
-that entry. All authors can stay on one team with identical permissions - the app
+that entry. All authors can stay on one team with identical permissions, and the app
 supplies the per-entry "not the author" check that Roles and Workflows cannot express on
 their own.
 
@@ -13,7 +13,7 @@ their own.
 
 ## Why this app is needed
 
-- **Roles** grant or deny publish/step-change by static role - they cannot say
+- **Roles** grant or deny publish/step-change by static role. They cannot say
   "everyone except whoever authored *this* entry."
 - **Workflows** (Premium) provide the stages and can create a review **Task**; an open
   Task blocks publishing. But neither Roles nor Workflows can say the *resolver* of that
@@ -48,7 +48,7 @@ The same Function runs again, as the App Identity:
      Else → leave resolved → publishing is unblocked.
 ```
 
-Publishing itself is **not** custom code - it stays native, gated by Contentful's
+Publishing itself is **not** custom code. It stays native, gated by Contentful's
 "unresolved task blocks publish" behavior. The only custom logic is creating the
 review task and the resolver-vs-contributor check.
 
@@ -56,14 +56,14 @@ review task and the resolver-vs-contributor check.
 
 An App Identity **cannot change a task's status back to `active`.** Even on a task
 the app itself created, `task.update` (resolved → active) returns
-`403 Forbidden` ("you don't have the permissions to make these updates on the task") -
+`403 Forbidden` ("you don't have the permissions to make these updates on the task"),
 proven empirically in a live space. Only `task.create` is permitted. So on a
 self-review the app **creates a fresh, unresolved review task**, which re-imposes the
 native publish block just as well; the old (resolved) task is simply left in place.
 
 ### The App Identity's real permissions on Tasks (measured, not documented)
 
-This spike's core finding - the App Identity's actual capabilities against Task and
+This spike's core finding, the App Identity's actual capabilities against Task and
 Workflow entities, established by live testing:
 
 | Operation | Result |
@@ -83,21 +83,21 @@ fresh blocking task on a self-review. It never relies on any ❌ operation.
 
 An earlier design reverted the Workflow step when an author self-approved. **That is not
 possible:** an App Identity is **not permitted to operate on `Workflow` /
-`WorkflowDefinition` entities** - `PUT /workflows/{id}` returns `403 Forbidden` (actor
+`WorkflowDefinition` entities.** `PUT /workflows/{id}` returns `403 Forbidden` (actor
 `app-function`), and there is no way to grant an app that permission (the
 `workflow_permission.actors` field only accepts `"all"`, `User`, or `Team` links; apps
 cannot be assigned a space Role). `Task` **is** in the app identity's allowed entity
-types, so the app can create and update tasks as itself - no service-account token, no
-external server.
+types, so the app can create and update tasks as itself, with no service-account token
+and no external server.
 
 ### Design decisions
 
-- **Author = any known contributor**, not just the creator - so Author A creating and
+- **Author = any known contributor**, not just the creator, so Author A creating and
   Author B rewriting means neither A nor B can clear the review.
 - **Enforcement = a blocking review task only a non-contributor can clear.** On a
   self-review, the app creates a fresh blocking task (publish stays blocked) and
   notifies the resolver in-product by assigning it to them with an explanatory body.
-- **Compute hosted on Contentful** as an App Event handler Function - no webhook, no
+- **Compute hosted on Contentful** as an App Event handler Function, with no webhook, no
   relay, and no server to run.
 
 ## Compliance limitations (read before sign-off)
@@ -107,9 +107,9 @@ complete edit history. The contributor set this app can build is:
 
 | Source | Coverage |
 | --- | --- |
-| `sys.createdBy` | Original creator - always present |
-| `sys.updatedBy` | **Last** editor only - intermediate editors are not captured here |
-| Published snapshots' `createdBy` | Author of each **published** version - a never-published entry has **no** snapshots |
+| `sys.createdBy` | Original creator; always present |
+| `sys.updatedBy` | **Last** editor only; intermediate editors are not captured here |
+| Published snapshots' `createdBy` | Author of each **published** version; a never-published entry has **no** snapshots |
 
 Consequence: an entry edited by several people but never published, or with
 intermediate edits between publishes, may not have every editor represented. This is
@@ -137,8 +137,8 @@ The Function is invoked by an **App Event subscription** on topic
 `ContentManagement.Task.save`. Confirmed against Contentful's own SDK typings
 (`@contentful/node-apps-toolkit`): `AppEventPayloadMap.Task` defines
 `create` / `save` / `delete`, and `SaveTaskEventPayload` delivers `sys.oldTask`,
-`sys.newTask`, and `sys.user` (the actor who saved) - no webhook, no external relay, no
-self-hosted endpoint.
+`sys.newTask`, and `sys.user` (the actor who saved), with no webhook, no external relay,
+and no self-hosted endpoint.
 
 > Note: the `Workflow.save` topic **does** fire on workflow step changes (validated
 > empirically in a test space), but it is not used here because the app cannot act on
@@ -155,10 +155,10 @@ self-hosted endpoint.
 ### 1. Configure the Workflow
 
 In the space, create a Workflow with a review step (e.g. "In Review"). Note that
-step's **stepId** - you'll pass it as `reviewStepId`. Do **not** have the workflow
+step's **stepId**, which you'll pass as `reviewStepId`. Do **not** have the workflow
 create the review task itself; the app creates it, so the review task the app enforces
 on is the only one and its body carries the marker the app matches. An unresolved task
-blocks publishing natively - that is the hard gate.
+blocks publishing natively, and that is the hard gate.
 
 ### 2. Build and upload the app (incl. the Function)
 
@@ -182,8 +182,8 @@ Set installation parameters:
   only enforces four-eyes on tasks whose body includes it. Defaults to
   `Independent review required` (the body the app itself writes).
 - **`reviewAssigneeId`** (optional): user id to assign the created task to (a
-  notification hint only - anyone may resolve; the four-eyes check catches the resolver).
-  Falls back to whoever moved the entry to the review step.
+  notification hint only; anyone may resolve, and the four-eyes check catches the
+  resolver). Falls back to whoever moved the entry to the review step.
 
 > The App Identity needs no special grant here: creating/updating its OWN Tasks is
 > within the app identity's allowed entity types.
