@@ -5,13 +5,13 @@
   "description": "Contentful App Framework app enforcing a four-eyes rule: the person who approves an entry's workflow step must not be a contributor to that entry.",
   "type": "module",
   "scripts": {
-    "build": "contentful-app-scripts build-functions --ci && vite build",
-    "build-functions": "contentful-app-scripts build-functions --ci",
+    "build": "contentful-app-scripts build-functions --ci",
     "create-app-definition": "contentful-app-scripts create-app-definition",
     "upload": "contentful-app-scripts upload --bundle-dir ./build",
     "upload-ci": "contentful-app-scripts upload-ci --bundle-dir ./build",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build-functions": "contentful-app-scripts build-functions --ci"
   },
   "dependencies": {
     "contentful-management": "^11.0.0"
