@@ -70,12 +70,14 @@ export async function handleWorkflowEvent(
   const cma = context.cma;
 
   // 2. Who advanced the step? The most recent changelog entry for this entry.
+  // NOTE: the workflows_changelog endpoint does NOT accept an `order` param
+  // (returns 400 "Unknown parameter: order"). It already returns items
+  // newest-first by default, so items[0] is the most recent step change.
   const changelog = await cma.workflowsChangelog.getMany({
     ...scope,
     query: {
       'entity.sys.id': entryId,
       'entity.sys.linkType': 'Entry',
-      order: '-sys.createdAt',
       limit: 25,
     },
   });
