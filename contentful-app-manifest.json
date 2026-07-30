@@ -1,0 +1,28 @@
+{
+  "functions": [
+    {
+      "id": "fourEyesApproval",
+      "name": "Four-Eyes Approval Enforcement",
+      "description": "Reverts a workflow approval when the approver is a contributor to the entry.",
+      "path": "functions/approvalHandler.js",
+      "entryFile": "src/functions/approvalHandler.ts",
+      "allowNetworks": [],
+      "accepts": ["appaction.call"]
+    }
+  ],
+  "actions": [
+    {
+      "id": "enforceFourEyes",
+      "name": "Enforce Four-Eyes on Approval",
+      "description": "Invoked by a Workflow.save webhook; checks approver vs. contributors and reverts on violation.",
+      "category": "Custom",
+      "type": "function",
+      "function": { "sys": { "type": "Link", "linkType": "Function", "id": "fourEyesApproval" } },
+      "parameters": [
+        { "id": "workflowId", "type": "Symbol", "required": true },
+        { "id": "entryId", "type": "Symbol", "required": true },
+        { "id": "approvedStepId", "type": "Symbol", "required": true }
+      ]
+    }
+  ]
+}
