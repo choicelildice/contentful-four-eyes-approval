@@ -83,20 +83,6 @@ describe('handleWorkflowEvent (app creates & owns the review task)', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  it('is idempotent: does not create a second active review task', async () => {
-    const create = vi.fn();
-    const cma = makeCma({
-      createSpy: create,
-      existingTasks: [{ status: 'active', body: REVIEW_BODY }],
-    });
-    const result = await handleWorkflowEvent(
-      workflowBody('step-review') as any,
-      ctx(cma, { reviewStepId: 'step-review' }) as any
-    );
-    expect(result.action).toBe('none');
-    expect(create).not.toHaveBeenCalled();
-  });
-
   it('skips when no reviewStepId is configured', async () => {
     const cma = makeCma({});
     const result = await handleWorkflowEvent(workflowBody('step-review') as any, ctx(cma) as any);

@@ -125,16 +125,13 @@ export async function handleWorkflowEvent(
 
   const scope = { spaceId: context.spaceId, environmentId: context.environmentId };
   const cma = context.cma;
-  const marker = markerOf(context);
 
-  // Idempotency: if an active review task already exists, do not create another.
-  const existing = await cma.task.getMany({ ...scope, entryId, query: { limit: 100 } });
-  const already = (existing.items ?? []).some(
-    (t: TaskLike) => t.status === 'active' && t.body?.includes(marker)
-  );
-  if (already) {
-    return { action: 'none', reason: 'Active review task already exists; not creating another.' };
-  }
+  // NOTE: we intentionally do NOT list existing tasks for idempotency here. The
+  // app identity is denied `task.getMany` ("You are not allowed to query task",
+  // 403), so querying would throw before we could create anything. Contentful's
+  // Workflow.save fires once per step transition, so re-entering the review step
+  // is the only way to create a duplicate; that is acceptable (it means a genuine
+  // re-review) and is the correct behavior for this gate.
 
   // Assignee is a notification hint only (anyone on the team can resolve; the
   // four-eyes check catches whoever actually does). Prefer the configured
