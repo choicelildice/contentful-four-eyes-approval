@@ -42,9 +42,11 @@ The same Function runs again, as the App Identity:
   2. Read the resolver from the event (sys.user)
   3. Build contributor set: entry sys.createdBy + sys.updatedBy + every
      published snapshot's createdBy
-  4. If resolver ∈ contributors (or resolver unknown) → CREATE A FRESH unresolved
-     review task (re-imposing the publish block), assigned to the resolver as a
-     native "assigned to you" notification, with a body explaining why.
+  4. If resolver is a space admin → leave resolved (override; content is never
+     permanently blocked).
+     Else if resolver ∈ contributors (or resolver unknown) → CREATE A FRESH
+     unresolved review task (re-imposing the publish block), assigned to the
+     resolver as a native "assigned to you" notification, with a body explaining why.
      Else → leave resolved → publishing is unblocked.
 ```
 
@@ -97,6 +99,10 @@ and no external server.
 - **Enforcement = a blocking review task only a non-contributor can clear.** On a
   self-review, the app creates a fresh blocking task (publish stays blocked) and
   notifies the resolver in-product by assigning it to them with an explanatory body.
+- **Admin override.** A space admin may close the review task even if they
+  contributed, so content is never permanently blocked. Admins are identified by the
+  `adminUserIds` param and/or a best-effort live space-membership check; the override
+  is deliberately scoped to admins (an audit-visible action), not ordinary authors.
 - **Compute hosted on Contentful** as an App Event handler Function, with no webhook, no
   relay, and no server to run.
 
@@ -184,6 +190,12 @@ Set installation parameters:
 - **`reviewAssigneeId`** (optional): user id to assign the created task to (a
   notification hint only; anyone may resolve, and the four-eyes check catches the
   resolver). Falls back to whoever moved the entry to the review step.
+- **`adminUserIds`** (optional): space admins allowed to CLOSE the review task even if
+  they contributed, so content is never permanently blocked. Accepts a comma or
+  space-separated string, or an array, of user ids. The app also makes a best-effort
+  live space-membership check to honor real admins automatically; the allowlist is the
+  permission-free fallback when that lookup is denied to the app identity. Neither path
+  fails open: an unknown resolver is never treated as an admin.
 
 > The App Identity needs no special grant here: creating/updating its OWN Tasks is
 > within the app identity's allowed entity types.

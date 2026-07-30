@@ -19,6 +19,9 @@
  *   B. `ContentManagement.Task.save` — when the review task is resolved, the app
  *      checks the resolver (event `sys.user`) against the entry's contributor set:
  *        - resolver is NOT a contributor -> leave resolved -> publish unblocked.
+ *        - resolver IS a space admin (override) -> leave resolved, so content is
+ *          never permanently blocked. Admins are identified by the `adminUserIds`
+ *          param and/or a best-effort live space-membership check.
  *        - resolver IS a contributor (self-review) -> CREATE A FRESH unresolved
  *          review task (again blocking publish), assigned to the resolver as a
  *          native "assigned to you" notification, with a body explaining why.
@@ -96,6 +99,14 @@ interface FunctionEventContext {
     reviewTaskMarker?: string;
     /** Optional user id to assign the created review task to (notification hint). */
     reviewAssigneeId?: string;
+    /**
+     * Space admins allowed to CLOSE the review task even if they contributed, so
+     * content is never permanently blocked. Accepts a comma/space-separated string
+     * or an array of user ids. In addition to this allowlist, the app also makes a
+     * best-effort live check of space membership (see `resolverIsAdmin`); the
+     * allowlist is the permission-free fallback if that lookup is denied.
+     */
+    adminUserIds?: string | string[];
   };
   // Pre-initialized CMA client authenticated as the App Identity.
   cma: any;
@@ -108,6 +119,47 @@ export interface HandlerResult {
 
 const markerOf = (ctx: FunctionEventContext) =>
   ctx.appInstallationParameters?.reviewTaskMarker?.trim() || DEFAULT_MARKER;
+
+/** Parse the `adminUserIds` param (comma/space-separated string or array) into a Set. */
+function adminAllowlist(ctx: FunctionEventContext): Set<string> {
+  const raw = ctx.appInstallationParameters?.adminUserIds;
+  const ids = Array.isArray(raw) ? raw : (raw ?? '').split(/[\s,]+/);
+  return new Set(ids.map((s) => s.trim()).filter(Boolean));
+}
+
+/**
+ * Is the resolver a space admin (who may close the review task even if they
+ * contributed, so content is never permanently blocked)?
+ *
+ * 1. The `adminUserIds` allowlist is authoritative and needs no permission.
+ * 2. As a convenience, we also try a live space-membership lookup so real admins
+ *    are honored without being listed. That lookup may be denied to the app
+ *    identity (it cannot query some collections); any failure degrades silently to
+ *    the allowlist only. It NEVER fails open: an unknown resolver is not an admin.
+ */
+async function resolverIsAdmin(
+  resolverId: string,
+  context: FunctionEventContext
+): Promise<boolean> {
+  if (!resolverId) return false;
+  if (adminAllowlist(context).has(resolverId)) return true;
+
+  const cma = context.cma;
+  try {
+    const memberships = await cma.spaceMember.getMany({
+      spaceId: context.spaceId,
+      query: { 'sys.user.sys.id': resolverId, limit: 1 },
+    });
+    const member = memberships?.items?.[0];
+    if (member?.admin === true) return true;
+    const roles: Array<{ name?: string }> = member?.roles ?? [];
+    return roles.some((r) => (r.name ?? '').toLowerCase() === 'administrator');
+  } catch {
+    // App identity not permitted to read memberships (or none found). Fall back to
+    // the allowlist result computed above, which was false.
+    return false;
+  }
+}
 
 /**
  * A. Workflow reached the review step -> create the review task (idempotently).
@@ -199,6 +251,13 @@ export async function handleTaskEvent(
   const verdict = evaluateFourEyes({ approverId: resolverId, contributors });
   if (verdict.allowed) {
     return { action: 'none', reason: verdict.reason };
+  }
+
+  // Admin escape hatch: a space admin may close the review task even if they
+  // contributed, so content is never permanently blocked. This is deliberately
+  // scoped to admins only (an audit-visible override), not to ordinary authors.
+  if (await resolverIsAdmin(resolverId, context)) {
+    return { action: 'none', reason: 'Resolved by a space admin (override); left resolved.' };
   }
 
   // Violation -> the app CANNOT re-open the resolved task (task.update

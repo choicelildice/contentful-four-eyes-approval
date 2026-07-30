@@ -11,12 +11,20 @@ function makeCma(opts: {
   existingTasks?: any[];
   updateSpy?: ReturnType<typeof vi.fn>;
   createSpy?: ReturnType<typeof vi.fn>;
+  /** space members returned by spaceMember.getMany (keyed lookup ignored; returns as-is). */
+  spaceMembers?: any[];
+  /** make spaceMember.getMany reject (app identity denied membership query). */
+  spaceMemberDenied?: boolean;
 }) {
+  const spaceMemberGetMany = opts.spaceMemberDenied
+    ? vi.fn().mockRejectedValue(new Error('403'))
+    : vi.fn().mockResolvedValue({ items: opts.spaceMembers ?? [] });
   return {
     entry: {
       get: vi.fn().mockResolvedValue({ sys: { createdBy: userLink(opts.entryCreatedBy ?? 'alice') } }),
     },
     snapshot: { getManyForEntry: vi.fn().mockResolvedValue({ items: [] }) },
+    spaceMember: { getMany: spaceMemberGetMany },
     task: {
       getMany: vi.fn().mockResolvedValue({ items: opts.existingTasks ?? [] }),
       get: vi.fn().mockResolvedValue({
@@ -112,6 +120,39 @@ describe('handleTaskEvent (four-eyes enforcement on resolve)', () => {
     const result = await handleTaskEvent(resolveBody('bob') as any, ctx(cma) as any);
     expect(result.action).toBe('none');
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('lets a space admin on the allowlist close it even if they contributed', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({ entryCreatedBy: 'alice', createSpy: create });
+    // alice contributed AND is the resolver, but she is listed as an admin.
+    const result = await handleTaskEvent(
+      resolveBody('alice') as any,
+      ctx(cma, { adminUserIds: 'carol, alice' }) as any
+    );
+    expect(result.action).toBe('none');
+    expect(result.reason).toMatch(/admin/i);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('lets a space admin detected via live membership close it', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({
+      entryCreatedBy: 'alice',
+      createSpy: create,
+      spaceMembers: [{ admin: true, sys: { user: userLink('alice') } }],
+    });
+    const result = await handleTaskEvent(resolveBody('alice') as any, ctx(cma) as any);
+    expect(result.action).toBe('none');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('still re-blocks a contributor who is not an admin (membership lookup denied)', async () => {
+    const create = vi.fn().mockResolvedValue({});
+    const cma = makeCma({ entryCreatedBy: 'alice', createSpy: create, spaceMemberDenied: true });
+    const result = await handleTaskEvent(resolveBody('alice') as any, ctx(cma) as any);
+    expect(result.action).toBe('reblocked');
+    expect(create).toHaveBeenCalled();
   });
 
   it('ignores events that are not an active->resolved transition', async () => {
