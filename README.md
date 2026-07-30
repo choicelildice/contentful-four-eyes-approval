@@ -29,11 +29,10 @@ Author edits entry, moves Workflow: Draft → In Review   (cannot publish; publi
         │
 Reviewer moves Workflow: In Review → Approved
         │
-Contentful fires a `Workflow.save` webhook
+Contentful fires an App Event: ContentManagement.Workflow.save
         │
-Webhook invokes the "Enforce Four-Eyes on Approval" App Action
-        │
-Function (runs as the App Identity):
+The subscribed Contentful Function (appevent.handler) runs automatically,
+as the App Identity:
   1. Confirm the workflow is on the Approved step
   2. Read WorkflowsChangelog → who advanced it (eventBy)
   3. Build contributor set: entry sys.createdBy + sys.updatedBy + every
@@ -52,8 +51,8 @@ Publishing itself is **not** custom code — it stays native, gated by the Workf
   Author B rewriting means neither A nor B can self-approve.
 - **On violation: revert to the prior step** (the last changelog step before `Approved`)
   and return a rejection reason for the UI to surface.
-- **Compute hosted on Contentful** via a Function backing an App Action — no server for
-  Forge to run.
+- **Compute hosted on Contentful** as an App Event handler Function — no webhook, no
+  relay, and no server for Forge to run.
 
 ## Compliance limitations (read before sign-off)
 
@@ -75,12 +74,23 @@ requires bulletproof "every editor who ever touched it," that needs a custom edi
 The check **fails closed**: if the approver's identity can't be determined, the approval
 is rejected.
 
-### Why a webhook and not an App Event
+### Trigger: App Event, not a webhook or relay
 
-App Events (App Framework subscriptions) currently document support only for
-**entry / content-type / asset** topics — **Workflow is not a confirmed App Event topic**.
-`Workflow.save` **is** a confirmed webhook topic, so the trigger is a standard webhook
-that invokes the App Action.
+The Function is invoked by an **App Event subscription** on topic
+`ContentManagement.Workflow.save`. A workflow step change is delivered as
+`Workflow.save`, so the handler runs automatically on every step change — no
+webhook, no external relay server, no self-hosted endpoint.
+
+This is confirmed by Contentful's own SDK typings
+(`@contentful/node-apps-toolkit`): `AppEventPayloadMap.Workflow` defines
+`create` / `save` / `delete`, and an `appevent.handler` Function receives the
+`WorkflowProps` body. Note the public docs do **not** enumerate Workflow among
+App Event topics (they only mention entries/assets/content types), so **validate
+once empirically** in a test space — but the SDK contract makes it the expected
+outcome.
+
+`Workflow.complete` is NOT an App Event topic; a completed workflow surfaces via
+`save`/`delete`. This app keys off `save`.
 
 ## Setup
 
@@ -111,13 +121,16 @@ npm run upload -- --organization-id YOUR_ORG_ID
 The Function reverts the step **as the App Identity**. That identity must hold
 workflow step-change permission for the target steps, or the revert `PUT` returns 403.
 
-### 4. Wire the webhook
+### 4. Subscribe the App Event
 
-Create a webhook on topic **`Workflow.save`** that invokes the **Enforce Four-Eyes on
-Approval** App Action, mapping the payload to the action parameters:
-- `workflowId` → the saved workflow's `sys.id`
-- `entryId` → the workflow's `sys.entity.sys.id`
-- `approvedStepId` → the constant stepId from step 1
+In the app's **Events** tab (or via the CMA `AppEventSubscription`), subscribe the
+Function to topic **`ContentManagement.Workflow.save`**. No payload mapping or URL
+is needed — the Function receives the workflow entity directly.
+
+Set the **`approvedStepId`** app installation parameter to the `stepId` of the
+Approved step from step 1 (the Function reads it from
+`context.appInstallationParameters`).
+
 
 ### 5. Test
 
@@ -135,6 +148,7 @@ is reverted; have a different user approve and confirm it stands.
 src/functions/
   fourEyes.ts         # pure, testable logic: contributor set + four-eyes verdict
   fourEyes.test.ts    # unit tests for the rule and edge cases
-  approvalHandler.ts  # App Action handler: wires the rule to the CMA + revert
-contentful-app-manifest.json  # Function + App Action declarations
+  approvalHandler.ts  # appevent.handler: wires the rule to the CMA + revert
+  approvalHandler.test.ts  # tests for the handler (revert / allow / no-op / misconfig)
+contentful-app-manifest.json  # Function declaration (appevent.handler)
 ```

@@ -1,76 +1,86 @@
 /**
- * App Action handler (Contentful Function, invocation type `appaction.call`).
+ * App Event handler (Contentful Function, invocation type `appevent.handler`).
  *
- * Trigger chain:
- *   Webhook on `Workflow.save`  →  this App Action  →  four-eyes check  →  revert if violated
+ * Trigger: an App Event subscription on topic `ContentManagement.Workflow.save`.
+ * A workflow step change is delivered as `Workflow.save`, so this handler runs
+ * automatically whenever any entry's workflow step changes — no webhook, no relay,
+ * no external server. Verified against @contentful/node-apps-toolkit typings:
+ * `AppEventPayloadMap.Workflow` defines create/save/delete, and AppEventHandler
+ * receives `{ headers, body }` with the WorkflowProps body.
  *
- * We use a webhook + App Action rather than an App Event handler because, as of
- * this build, App Events only document support for entry/content-type/asset
- * topics — Workflow is NOT a confirmed App Event topic. `Workflow.save` IS a
- * confirmed webhook topic, so the webhook is the reliable trigger.
+ * The Function runs with the App Identity (context.cma is pre-initialized as that
+ * identity). That identity MUST be granted workflow step-change permission in the
+ * space, or the revert will 403.
  *
- * The Function runs with the App Identity. That identity MUST be granted
- * workflow step-change permission in the space, or the revert PUT will 403.
- *
- * Expected App Action parameters (sent by the webhook payload mapping):
- *   - workflowId:   sys.id of the Workflow entity that was saved
- *   - entryId:      sys.id of the entry the workflow is attached to
- *   - approvedStepId: the stepId we treat as "Approved" (from WorkflowDefinition)
+ * The "Approved" step id is configured as an app installation parameter
+ * (`approvedStepId`) so it isn't hardcoded per environment.
  */
 import { collectContributors, evaluateFourEyes, type Snapshot } from './fourEyes.js';
 
-interface AppActionRequest {
+// Minimal shapes we rely on from the event/context (typed loosely to avoid
+// pinning to a specific SDK version's exported names).
+interface WorkflowEvent {
+  headers: { 'X-Contentful-Topic'?: string } & Record<string, unknown>;
   body: {
-    workflowId: string;
-    entryId: string;
-    approvedStepId: string;
+    sys: { id: string; entity?: { sys: { id: string } } };
+    stepId?: string;
   };
 }
 
 interface FunctionEventContext {
   spaceId: string;
   environmentId: string;
-  // Pre-initialized CMA client, authenticated as the App Identity.
-  cmaClientOptions: unknown;
-}
-
-// The concrete CMA client type comes from contentful-management; kept loose here
-// so this file documents the flow without pinning to a specific SDK shape.
-type Cma = any;
-
-export interface HandlerDeps {
-  /** Factory so tests can inject a fake CMA. In production, build from context.cmaClientOptions. */
-  getCma: (context: FunctionEventContext) => Cma;
+  appInstallationParameters: { approvedStepId?: string };
+  // Pre-initialized CMA client authenticated as the App Identity.
+  cma: any;
 }
 
 export interface HandlerResult {
-  status: 'succeeded' | 'failed';
   action: 'none' | 'reverted';
   reason: string;
 }
 
-export async function handleApproval(
-  event: AppActionRequest,
-  context: FunctionEventContext,
-  deps: HandlerDeps
+/**
+ * App Event handler. Returns void to Contentful (per AppEventHandlerResponse);
+ * we return a HandlerResult too so this is unit-testable and logs are meaningful.
+ */
+export async function handleWorkflowEvent(
+  event: WorkflowEvent,
+  context: FunctionEventContext
 ): Promise<HandlerResult> {
-  const { workflowId, entryId, approvedStepId } = event.body;
-  const cma = deps.getCma(context);
-  const scope = { spaceId: context.spaceId, environmentId: context.environmentId };
-
-  // 1. Read the workflow; only act if it just landed on the Approved step.
-  const workflow = await cma.workflow.get({ ...scope, workflowId });
-  if (workflow.stepId !== approvedStepId) {
-    return { status: 'succeeded', action: 'none', reason: 'Not the approved step; nothing to enforce.' };
+  const approvedStepId = context.appInstallationParameters?.approvedStepId;
+  if (!approvedStepId) {
+    // Misconfiguration: without the Approved step id we can't know when to enforce.
+    return { action: 'none', reason: 'No approvedStepId configured; enforcement skipped.' };
   }
 
-  // 2. Find who advanced the step: the most recent changelog entry for this entry.
+  const workflow = event.body;
+  const workflowId = workflow.sys.id;
+  const entryId = workflow.sys.entity?.sys.id;
+
+  // 1. Only act when the workflow just landed on the Approved step.
+  if (workflow.stepId !== approvedStepId) {
+    return { action: 'none', reason: 'Not the approved step; nothing to enforce.' };
+  }
+  if (!entryId) {
+    return { action: 'none', reason: 'Workflow has no linked entry; nothing to enforce.' };
+  }
+
+  const scope = { spaceId: context.spaceId, environmentId: context.environmentId };
+  const cma = context.cma;
+
+  // 2. Who advanced the step? The most recent changelog entry for this entry.
   const changelog = await cma.workflowsChangelog.getMany({
     ...scope,
-    query: { 'entity.sys.id': entryId, 'entity.sys.linkType': 'Entry', order: '-sys.createdAt', limit: 1 },
+    query: {
+      'entity.sys.id': entryId,
+      'entity.sys.linkType': 'Entry',
+      order: '-sys.createdAt',
+      limit: 25,
+    },
   });
-  const latest = changelog.items?.[0];
-  const approverId: string = latest?.eventBy?.sys?.id ?? '';
+  const items: any[] = changelog.items ?? [];
+  const approverId: string = items[0]?.eventBy?.sys?.id ?? '';
 
   // 3. Build the contributor set from entry sys + published snapshots.
   const entry = await cma.entry.get({ ...scope, entryId });
@@ -78,40 +88,35 @@ export async function handleApproval(
   const snapshots: Snapshot[] = snapshotsResp.items ?? [];
   const contributors = collectContributors(entry.sys, snapshots);
 
-  // 4. Evaluate the rule.
+  // 4. Evaluate the four-eyes rule.
   const verdict = evaluateFourEyes({ approverId, contributors });
   if (verdict.allowed) {
-    return { status: 'succeeded', action: 'none', reason: verdict.reason };
+    return { action: 'none', reason: verdict.reason };
   }
 
-  // 5. Violation → revert to the previous step. We revert to the step recorded
-  //    just before the approval in the changelog, falling back to the workflow
-  //    definition's first step if history is unavailable.
-  const previousStepId = await resolvePreviousStep(cma, scope, entryId, approvedStepId);
-  await cma.workflow.update(
-    { ...scope, workflowId },
-    { ...workflow, stepId: previousStepId }
-  );
+  // 5. Violation → revert to the last step that wasn't the approved step.
+  const previousStepId =
+    items.map((i) => i.stepId).find((s: string) => s && s !== approvedStepId) ?? '';
 
-  return { status: 'failed', action: 'reverted', reason: verdict.reason };
+  const current = await cma.workflow.get({ ...scope, workflowId });
+  await cma.workflow.update({ ...scope, workflowId }, { ...current, stepId: previousStepId });
+
+  return { action: 'reverted', reason: verdict.reason };
 }
 
 /**
- * Resolve the step to revert to: the last changelog step that was NOT the approved
- * step. Falls back to the workflow definition's first step if none is found.
+ * Contentful Function entrypoint. The runtime calls the default export with
+ * (event, context). We adapt to the void-returning AppEventHandler contract.
  */
-async function resolvePreviousStep(
-  cma: Cma,
-  scope: { spaceId: string; environmentId: string },
-  entryId: string,
-  approvedStepId: string
-): Promise<string> {
-  const history = await cma.workflowsChangelog.getMany({
-    ...scope,
-    query: { 'entity.sys.id': entryId, 'entity.sys.linkType': 'Entry', order: '-sys.createdAt', limit: 25 },
-  });
-  const priorStep = (history.items ?? [])
-    .map((i: any) => i.stepId)
-    .find((stepId: string) => stepId && stepId !== approvedStepId);
-  return priorStep ?? '';
-}
+export const handler = async (event: WorkflowEvent, context: FunctionEventContext): Promise<void> => {
+  const topic = event.headers?.['X-Contentful-Topic'];
+  // Defensive: only process Workflow.save (the subscription should already scope this).
+  if (topic && !topic.endsWith('Workflow.save')) {
+    return;
+  }
+  const result = await handleWorkflowEvent(event, context);
+  // Surfaced in Function logs for observability.
+  console.log(`[four-eyes] ${result.action}: ${result.reason}`);
+};
+
+export default handler;
