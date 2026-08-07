@@ -166,6 +166,19 @@ create the review task itself; the app creates it, so the review task the app en
 on is the only one and its body carries the marker the app matches. An unresolved task
 blocks publishing natively, and that is the hard gate.
 
+#### Finding the stepId
+
+**Browser DevTools:** Open the Contentful web app, navigate to **Settings → Workflows**, and open your workflow. In the Network tab, look for a request to `/workflow_definitions` — the response lists each step with its `id`. Copy the `id` of your `Approved` step.
+
+**CMA:** Query the workflow definitions endpoint directly:
+
+```bash
+curl -s \
+  -H "Authorization: Bearer $CONTENTFUL_MANAGEMENT_TOKEN" \
+  "https://api.contentful.com/spaces/$SPACE_ID/environments/$ENVIRONMENT_ID/workflow_definitions" \
+  | jq '.items[] | {name: .name, steps: [.steps[] | {id: .id, name: .name}]}'
+```
+
 ### 2. Build and upload the app (incl. the Function)
 
 ```bash
